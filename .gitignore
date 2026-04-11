@@ -1,0 +1,7 @@
+.venv
+.vscode
+.env
+__pycache__
+travel_new.sqlite
+travel.sqlite
+workflow.png
