@@ -2,11 +2,13 @@ import os
 from datetime import datetime
 
 from langchain_tavily import TavilySearch
+
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
 
+load_dotenv()
 
 from graph_chat.state import State
 from tools.car_tools import (
@@ -30,23 +32,6 @@ from tools.trip_tools import (
     cancel_excursion,
 )
 
-load_dotenv()
-
-
-def _normalize_content(content) -> str:
-    """将列表格式的消息内容拍平为字符串（DeepSeek 等 API 不支持列表格式）。"""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict):
-                parts.append(item.get("text", str(item)))
-        return "\n".join(parts)
-    return str(content)
-
 
 class CtripAssistant:
 
@@ -69,22 +54,9 @@ class CtripAssistant:
         while True:
             # 创建了一个无限循环，它将一直执行直到：从 self.runnable 获取的结果是有效的。
             # 如果结果无效（例如，没有工具调用且内容为空或内容不符合预期格式），循环将继续执行，
-            configuration = config.get("configurable", {})
-            user_id = configuration.get("passenger_id", None)
-            state = {
-                **state,
-                "user_info": user_id,
-            }  # 从配置中得到旅客的ID，也追加到state
-
-            # DeepSeek 等不兼容 OpenAI 多模态格式的 API 要求 content 必须为字符串
-            # 将消息列表中所有 list 格式的 content 统一转为字符串
-            normalized = []
-            for msg in state.get("messages", []):
-                if isinstance(msg.content, list):
-                    msg = msg.model_copy(update={"content": _normalize_content(msg.content)})
-                normalized.append(msg)
-            state = {**state, "messages": normalized}
-
+            # configuration = config.get('configurable', {})
+            # user_id = configuration.get('passenger_id', None)
+            # state = {**state, 'user_info': user_id}  # 从配置中得到旅客的ID，也追加到state
             result = self.runnable.invoke(state)
             # 如果，runnable执行完后，没有得到一个实际的输出
             if (
@@ -107,27 +79,35 @@ class CtripAssistant:
 # 初始化搜索工具，限制结果数量为2
 os.environ["TAVILY_API_KEY"] = "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"
 tavily_tool = TavilySearch(max_results=1)
-# 定义工具列表，这些工具将在与用户交互过程中被调用
-part_1_tools = [
-    tavily_tool,
-    fetch_user_flight_information,
-    search_flights,
-    lookup_policy,
-    update_ticket_to_new_flight,
-    cancel_ticket,
-    search_car_rentals,
-    book_car_rental,
-    update_car_rental,
-    cancel_car_rental,
-    search_hotels,
-    book_hotel,
-    update_hotel,
-    cancel_hotel,
-    search_trip_recommendations,
-    book_excursion,
-    update_excursion,
-    cancel_excursion,
+
+# 定义“只读”工具列表，这些工具不需要用户确认即可使用
+safe_tools = [
+    tavily_tool,  # 搜索结果，例如航班信息
+    fetch_user_flight_information,  # 获取用户的航班信息
+    search_flights,  # 搜索航班
+    lookup_policy,  # 查看公司政策
+    search_car_rentals,  # 搜索租车选项
+    search_hotels,  # 搜索酒店
+    search_trip_recommendations,  # 搜索旅行推荐
 ]
+
+# 定义敏感工具列表，这些工具会更改用户的预订
+sensitive_tools = [
+    update_ticket_to_new_flight,  # 更新航班票务到新航班
+    cancel_ticket,  # 取消票务
+    book_car_rental,  # 预订租车
+    update_car_rental,  # 更新租车预订
+    cancel_car_rental,  # 取消租车预订
+    book_hotel,  # 预订酒店
+    update_hotel,  # 更新酒店预订
+    cancel_hotel,  # 取消酒店预订
+    book_excursion,  # 预订短途旅行
+    update_excursion,  # 更新短途旅行预订
+    cancel_excursion,  # 取消短途旅行预订
+]
+
+#  用于后续判断是否需要用户确认
+sensitive_tool_names = {t.name for t in sensitive_tools}
 
 
 def create_assistant_node() -> CtripAssistant:
@@ -137,9 +117,9 @@ def create_assistant_node() -> CtripAssistant:
     """
     llm = ChatOpenAI(  # openai的
         temperature=0,
-        model=os.getenv("DEEPSEEK_MODEL_NAME"),
-        api_key=os.getenv("DEEPSEEK_API_KEY"),
-        base_url=os.getenv("DEEPSEEK_BASE_URL"),
+        model=os.getenv("LLM_MODEL_NAME"),
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+        base_url=os.getenv("OPENROUTER_BASE_URL"),
     )
 
     # 创建主要助理使用的提示模板
@@ -156,5 +136,5 @@ def create_assistant_node() -> CtripAssistant:
         ]
     ).partial(time=datetime.now())
 
-    runnable = primary_assistant_prompt | llm.bind_tools(part_1_tools)
+    runnable = primary_assistant_prompt | llm.bind_tools(safe_tools + sensitive_tools)
     return CtripAssistant(runnable)  # 创建一个类的实例
