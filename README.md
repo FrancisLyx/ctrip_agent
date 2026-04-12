@@ -6,36 +6,53 @@
 
 ### 工作流程
 
-整体采用 LangGraph 的 `assistant → tools → assistant` 循环结构，直到 LLM 输出纯文本回复为止。
+整体采用主助理 + 四个专业子助理的多 Agent 架构，由 `fetch_user_info` 预加载用户信息后进入主助理，主助理负责查询与任务分发，写操作委派给对应子助理执行，敏感工具调用前中断等待用户确认。
 
 ```
 用户输入
    │
    ▼
-┌──────────┐     有工具调用     ┌───────────────┐
-│ assistant │ ──────────────► │     tools      │
-│  (LLM)   │                  │ (工具节点+兜底) │
-└──────────┘ ◄─────────────── └───────────────┘
-   │           工具结果返回
-   │ 纯文本回复
+┌──────────────────┐
+│  fetch_user_info  │  预加载乘客航班信息 → 写入 State.user_info
+└──────────────────┘
+   │ route_to_workflow（条件路由）
    ▼
-输出给用户（循环等待下一轮）
+┌──────────────────────┐ ◄─────────────────── leave_skill
+│   primary_assistant   │   （子助理完成后返回）
+└──────────────────────┘
+   │
+   ├─ 查询/搜索 ──► primary_assistant_tools ──► primary_assistant
+   │
+   ├─ 航班改签/退票 ──► enter_update_flight ──► update_flight
+   │                                               ├─ update_flight_safe_tools
+   │                                               └─ update_flight_sensitive_tools  [⚠️ 中断确认]
+   │
+   ├─ 租车预订 ──► enter_book_car_rental ──► book_car_rental
+   │                                               ├─ book_car_rental_safe_tools
+   │                                               └─ book_car_rental_sensitive_tools [⚠️ 中断确认]
+   │
+   ├─ 酒店预订 ──► enter_book_hotel ──► book_hotel
+   │                                               ├─ book_hotel_safe_tools
+   │                                               └─ book_hotel_sensitive_tools      [⚠️ 中断确认]
+   │
+   ├─ 旅游推荐 ──► enter_book_excursion ──► book_excursion
+   │                                               ├─ book_excursion_safe_tools
+   │                                               └─ book_excursion_sensitive_tools  [⚠️ 中断确认]
+   │
+   └─ 纯文本回复 ──► END
 ```
 
 **各环节说明：**
 
-1. **入口** (`workflow.py`) — 每轮读取用户输入，以 `stream_mode="values"` 流式执行图，并打印每步事件。会话通过 `thread_id` 隔离，`passenger_id` 随配置注入。
+1. **入口** (`workflow.py`) — 每轮读取用户输入，以 `stream_mode="values"` 流式执行图。若图在敏感工具节点中断，提示用户二次确认；确认后继续执行，否则将拒绝原因以 `ToolMessage` 回传 LLM。
 
-2. **assistant 节点** (`graph_chat/assistant.py`) — 核心是 `CtripAssistant` 类：
-   - 从 `config` 中取出 `passenger_id` 追加到 State，让 LLM 感知当前用户身份
-   - 调用 `GPT-4o`（带系统提示：角色描述 + 当前时间 + 用户信息）
-   - 如果 LLM 返回空内容，自动追加 `"请提供一个真实的输出"` 重试，直到获得有效回复
+2. **fetch_user_info 节点** — 图启动后首先执行，调用 `fetch_user_flight_information` 拉取当前乘客航班信息，写入 `State.user_info`，供主助理系统提示直接使用。
 
-3. **tools 节点** (`tools/tools_handler.py`) — 用 `ToolNode` 执行 LLM 选择的工具，调用失败时通过 `with_fallbacks` 兜底，将错误封装成 `ToolMessage` 回传给 LLM 自动纠错。
+3. **primary_assistant 节点** (`graph_chat/assistant.py`) — 主助理，负责回答查询类问题（搜索航班、查政策）；若涉及预订/改签/退订，通过委派工具（`ToFlightBookingAssistant` 等）将任务交给对应子助理。
 
-4. **条件路由** — `tools_condition` 判断 LLM 最新消息是否含 `tool_calls`：有则转 tools 节点，无则结束本轮。
+4. **子助理节点** (`graph_chat/agent_assistant.py`) — 航班、租车、酒店、旅游各有独立子助理，内部按工具类型路由：只读操作走 `safe_tools`，写操作走 `sensitive_tools`（执行前中断等待用户确认）。子助理完成后通过 `leave_skill` 返回主助理。
 
-5. **记忆持久化** — `MemorySaver` 在内存中保存全部对话历史，下一轮输入时历史消息自动带入上下文。
+5. **记忆持久化** — `MemorySaver` 保存全部对话历史；`dialog_state` 栈记录当前激活的子助理，多轮对话中断恢复时可精准路由回对应子助理。
 
 **可调用的工具清单：**
 
@@ -110,16 +127,173 @@ NEO4J_PASSWORD=your_password
 
 ### 功能迭代
 
-**[2026-04-11] 流程节点重构**
+**[拆分多 Agent] 多助理协作架构**
 
-- **工具安全分级**：拆分原 `part_1_tools`，按操作性质分为 `safe_tools`（只读查询：搜索航班/酒店/租车/政策）和 `sensitive_tools`（写操作：订/改/退），并提取 `sensitive_tool_names` 集合供后续权限判断
-- **用户信息预加载节点**：新增 `fetch_user_info` 节点，在助手调用前主动调用 `fetch_user_flight_information` 拉取乘客航班信息并写入 `State.user_info`，图的起点由 `START → assistant` 改为 `START → fetch_user_info → assistant`
-- **工具调用中断确认**：编译图时加入 `interrupt_before=["tools"]`，每次工具调用前暂停；若用户输入 `y` 则继续，否则以 `ToolMessage` 将拒绝原因回传给 LLM，实现人在回路（Human-in-the-loop）
+- **主助理 + 四子助理架构**：主助理 `primary_assistant` 负责查询与任务分发，航班/酒店/租车/旅游各有独立子助理处理写操作，通过 Pydantic 模型（`ToFlightBookingAssistant` 等）触发委派
+- **对话状态栈 `dialog_state`**：使用 `Annotated[list, update_dialog_stack]` 管理当前激活的子助理；入栈（`entry_node`）进入子助理，出栈（`leave_skill` → `"pop"`）返回主助理
+- **子助理工具安全分级**：每个子助理内部将工具分为 `safe_tools`（只读查询）和 `sensitive_tools`（写操作），通过条件路由分别处理
+- **敏感工具中断确认**：`interrupt_before` 仅针对四个子助理的 `*_sensitive_tools` 节点，执行前暂停等待用户输入 `y` 确认，拒绝则以 `ToolMessage` 回传原因
+- **`CompleteOrEscalate` 机制**：子助理完成任务或用户改变意图时，调用此工具触发 `leave_skill`，弹出对话栈回到主助理
+
+**[敏感工具区分] 流程节点重构**
+
+- **工具安全分级**：拆分原 `part_1_tools`，按操作性质分为 `safe_tools`（只读查询）和 `sensitive_tools`（写操作），并提取 `sensitive_tool_names` 集合供后续权限判断
+- **用户信息预加载节点**：新增 `fetch_user_info` 节点，在助手调用前主动调用 `fetch_user_flight_information` 拉取乘客航班信息写入 `State.user_info`
+- **工具调用中断确认**：编译图时加入 `interrupt_before`，敏感工具调用前暂停等待用户确认，实现人在回路（Human-in-the-loop）
 
 **[项目初始化] 基础架构搭建**
 
 - 在 `tools/` 模块中完成航班、酒店、租车、旅行推荐、政策查询等工具函数的封装
 - 基于 LangGraph 搭建 `assistant → tools → assistant` 基础循环图，支持多轮工具调用与对话管理
+
+---
+
+## 多 Agent 架构详解
+
+### 整体架构
+
+采用**主助理 + 四个专业子助理**的多 Agent 架构。主助理负责意图识别与查询，写操作委派给对应子助理独立处理。
+
+```
+                        ┌──────────────────┐
+                        │     __start__     │
+                        └────────┬─────────┘
+                                 ▼
+                        ┌──────────────────┐
+                        │  fetch_user_info  │  预加载用户航班信息 → State.user_info
+                        └────────┬─────────┘
+                                 ▼
+                          route_to_workflow（基于 dialog_state 栈路由）
+                                 │
+           ┌─────────────────────┼─────────────────────────────────┐
+           ▼                     ▼                                 ▼
+    ┌─────────────┐    ┌──────────────────┐              恢复到当前活跃的
+    │ 首次进入     │    │  primary_assistant │ ◄── leave_skill  子助理（多轮场景）
+    │ dialog_state │    └────────┬─────────┘
+    │ 为空         │             │
+    └──────┬──────┘    ┌────────┼────────────┬──────────────┬──────────────┐
+           │           ▼        ▼            ▼              ▼              ▼
+           │       查询/搜索  航班任务     租车任务       酒店任务       旅游任务
+           │           │        │            │              │              │
+           │           ▼        ▼            ▼              ▼              ▼
+           │   primary_    enter_update  enter_book_   enter_book_   enter_book_
+           │   assistant   _flight       car_rental    hotel         excursion
+           │   _tools         │            │              │              │
+           │      │           ▼            ▼              ▼              ▼
+           │      │      update_flight book_car_     book_hotel    book_excursion
+           │      │       ┌──┴──┐     rental          ┌──┴──┐       ┌──┴──┐
+           │      │       ▼     ▼     ┌──┴──┐         ▼     ▼       ▼     ▼
+           │      │     safe  sensitive safe sensitive safe sensitive safe sensitive
+           │      │     tools  tools⚠️ tools tools⚠️  tools tools⚠️  tools tools⚠️
+           │      │
+           ▼      ▼                    ⚠️ = interrupt_before（需用户确认）
+          END  ──►primary_assistant
+```
+
+### 核心组件说明
+
+#### 1. State 状态定义 (`graph_chat/state.py`)
+
+```python
+class State(TypedDict):
+    messages: Annotated[list[AnyMessage], add_messages]   # 对话消息列表
+    user_info: str                                         # 预加载的用户航班信息
+    dialog_state: Annotated[list[Literal[...]], update_dialog_stack]  # 对话状态栈
+```
+
+- `messages`：使用 `add_messages` reducer 自动追加消息
+- `user_info`：由 `fetch_user_info` 节点在图启动时填充
+- `dialog_state`：栈结构，跟踪当前激活的子助理。入栈时 `push` 子助理名，出栈时传 `"pop"` 弹出栈顶
+
+#### 2. 图构建流程 (`graph_chat/workflow.py`)
+
+| 步骤 | 操作 | 说明 |
+|------|------|------|
+| 1 | `add_node("fetch_user_info")` | 预加载用户信息节点 |
+| 2 | `add_edge(START, "fetch_user_info")` | 图的入口 |
+| 3 | `build_flight_graph(builder)` 等 | 注册四个子工作流 |
+| 4 | `add_node("primary_assistant")` | 主助理节点 |
+| 5 | `add_conditional_edges("fetch_user_info", route_to_workflow)` | 基于 `dialog_state` 路由 |
+| 6 | `add_conditional_edges("primary_assistant", route_primary_assistant)` | 主助理出口路由 |
+| 7 | `graph = builder.compile(interrupt_before=[...])` | 编译图，配置敏感工具中断点 |
+
+#### 3. 路由逻辑
+
+**`route_to_workflow`** — `fetch_user_info` 之后的第一个路由：
+- `dialog_state` 为空 → 进入 `primary_assistant`（首次对话）
+- `dialog_state` 非空 → 返回栈顶子助理（多轮恢复场景）
+
+**`route_primary_assistant`** — 主助理的出口路由：
+- LLM 调用 `ToFlightBookingAssistant` → 进入 `enter_update_flight`
+- LLM 调用 `ToBookCarRental` → 进入 `enter_book_car_rental`
+- LLM 调用 `ToHotelBookingAssistant` → 进入 `enter_book_hotel`
+- LLM 调用 `ToBookExcursion` → 进入 `enter_book_excursion`
+- LLM 调用普通工具（搜索/政策） → 进入 `primary_assistant_tools`
+- LLM 无工具调用（纯文本） → `END`
+
+**子助理内部路由**（以航班为例）：
+- 所有 tool_calls 都是 safe_tools → 走 `update_flight_safe_tools`
+- 存在 sensitive tool → 走 `update_flight_sensitive_tools`（中断等待确认）
+- 调用 `CompleteOrEscalate` → 走 `leave_skill` 返回主助理
+
+#### 4. 子助理进入/退出机制
+
+**进入**（`entry_node.py`）：
+```
+primary_assistant → ToFlightBookingAssistant (tool_call)
+    → enter_update_flight (入口节点)
+        → 写入 dialog_state: "update_flight"  # 入栈
+        → 生成 ToolMessage 通知子助理接管
+    → update_flight (子助理开始工作)
+```
+
+**退出**（`build_child_graph.py`）：
+```
+update_flight → CompleteOrEscalate (tool_call)
+    → leave_skill
+        → 写入 dialog_state: "pop"  # 出栈
+        → 生成 ToolMessage 通知主助理恢复
+    → primary_assistant (主助理接管)
+```
+
+#### 5. 敏感工具确认流程
+
+```
+用户: "帮我取消机票"
+    → primary_assistant 委派给 update_flight 子助理
+    → update_flight 调用 cancel_ticket (sensitive_tool)
+    → 图在 update_flight_sensitive_tools 中断 ⏸️
+    → 终端打印: "您是否批准上述操作？输入'y'继续"
+    → 用户输入 'y': graph.stream(None, config) 继续执行
+    → 用户输入其他: ToolMessage(content="拒绝原因") 回传给 LLM
+```
+
+#### 6. 项目结构
+
+```
+ctrip_agent/
+├── graph_chat/
+│   ├── workflow.py            # 图构建、编译、主循环
+│   ├── state.py               # State 定义（messages, user_info, dialog_state）
+│   ├── assistant.py           # CtripAssistant 类 + 主助理 prompt/tools
+│   ├── agent_assistant.py     # 四个子助理的 prompt/tools 定义
+│   ├── build_child_graph.py   # 子工作流构建（节点/边/路由/leave_skill）
+│   ├── entry_node.py          # 子助理入口节点工厂函数
+│   ├── base_data_model.py     # Pydantic 委派模型 + CompleteOrEscalate
+│   ├── llm_tavily.py          # LLM 和 Tavily 搜索工具初始化
+│   └── draw_png.py            # 图可视化
+├── tools/
+│   ├── flights_tools.py       # 航班工具（查询/改签/退票）
+│   ├── hotels_tools.py        # 酒店工具（搜索/预订/修改/取消）
+│   ├── car_tools.py           # 租车工具
+│   ├── trip_tools.py          # 旅游推荐工具
+│   ├── retriever_vector.py    # 政策向量检索
+│   ├── tools_handler.py       # ToolNode 封装 + 兜底 + 打印
+│   └── init_db.py             # 数据库初始化/日期更新
+├── travel.sqlite              # 原始数据备份
+├── travel_new.sqlite          # 运行时数据库（每次 update_dates 重置）
+└── requirements.txt
+```
 
 # Reference
 

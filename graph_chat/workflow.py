@@ -1,17 +1,30 @@
 import uuid
 
 from langchain_core.messages import ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.constants import START, END
 from langgraph.graph import StateGraph
 from langgraph.prebuilt import tools_condition
-from tools.flights_tools import fetch_user_flight_information
+
 from graph_chat.assistant import (
-    create_assistant_node,
-    safe_tools,
-    sensitive_tools,
-    sensitive_tool_names,
+    CtripAssistant,
+    assistant_runnable,
+    primary_assistant_tools,
 )
+from graph_chat.base_data_model import (
+    ToFlightBookingAssistant,
+    ToBookCarRental,
+    ToHotelBookingAssistant,
+    ToBookExcursion,
+)
+from graph_chat.build_child_graph import (
+    build_flight_graph,
+    builder_hotel_graph,
+    build_car_graph,
+    builder_excursion_graph,
+)
+from tools.flights_tools import fetch_user_flight_information
 from graph_chat.draw_png import draw_graph
 from graph_chat.state import State
 from tools.init_db import update_dates
@@ -26,6 +39,7 @@ def get_user_info(state: State):
     获取用户的航班信息并更新状态字典。
     参数:
         state (State): 当前状态字典。
+        config (RunnableConfig): 包含 passenger_id 等配置信息。
     返回:
         dict: 包含用户信息的新状态字典。
     """
@@ -36,53 +50,94 @@ def get_user_info(state: State):
 builder.add_node("fetch_user_info", get_user_info)
 builder.add_edge(START, "fetch_user_info")
 
-# 自定义函数代表节点，Runnable，或者一个自定义的类都可以是节点
-builder.add_node("assistant", create_assistant_node())
-# 添加一个名为"tools"的节点，该节点创建了一个带有回退机制的工具节点
-builder.add_node("safe_tools", create_tool_node_with_fallback(safe_tools))
-builder.add_node("sensitive_tools", create_tool_node_with_fallback(sensitive_tools))
-# 定义边：这些边决定了控制流如何移动
-# 从起始点START到"assistant"节点添加一条边
-builder.add_edge("fetch_user_info", "assistant")
+# 添加 四个业务助理 的 子工作流
+builder = build_flight_graph(builder)
+builder = builder_hotel_graph(builder)
+builder = build_car_graph(builder)
+builder = builder_excursion_graph(builder)
+
+# 添加主助理
+builder.add_node("primary_assistant", CtripAssistant(assistant_runnable))
+builder.add_node(
+    "primary_assistant_tools",
+    create_tool_node_with_fallback(
+        primary_assistant_tools
+    ),  # 主助理工具节点，包含各种工具
+)
 
 
-def route_condition_tools(state: State) -> str:
+def route_primary_assistant(state: dict):
     """
-    根据状态判断应该跳转到哪个节点
-    :param state: 当前状态
-    :return: 应该跳转的节点
+    根据当前状态 判断路由到 子助手节点。
+    :param state: 当前对话状态字典
+    :return: 下一步应跳转到的节点名
     """
-    next_node = tools_condition(state)
-    if next_node == END:
-        return END
-
-    ai_message = state["messages"][-1]
-    tool_call = ai_message.tool_calls[0]
-    tool_name = tool_call["name"]
-    if tool_name in sensitive_tool_names:
-        return "sensitive_tools"
-    else:
-        return "safe_tools"
+    route = tools_condition(state)  # 判断下一步的方向
+    if route == END:
+        return END  # 如果结束条件满足，则返回END
+    tool_calls = state["messages"][-1].tool_calls  # 获取最后一条消息中的工具调用
+    if tool_calls:
+        if tool_calls[0]["name"] == ToFlightBookingAssistant.__name__:
+            return "enter_update_flight"  # 跳转至航班预订入口节点
+        elif tool_calls[0]["name"] == ToBookCarRental.__name__:
+            return "enter_book_car_rental"  # 跳转至租车预订入口节点
+        elif tool_calls[0]["name"] == ToHotelBookingAssistant.__name__:
+            return "enter_book_hotel"  # 跳转至酒店预订入口节点
+        elif tool_calls[0]["name"] == ToBookExcursion.__name__:
+            return "enter_book_excursion"  # 跳转至游览预订入口节点
+        return "primary_assistant_tools"  # 否则跳转至主助理工具节点
+    raise ValueError("无效的路由")  # 如果没有找到合适的工具调用，抛出异常
 
 
 builder.add_conditional_edges(
-    "assistant",
-    route_condition_tools,
-    ["sensitive_tools", "safe_tools", END],
+    "primary_assistant",
+    route_primary_assistant,
+    [
+        "enter_update_flight",  # 航班 子助手的入口节点
+        "enter_book_car_rental",  # 租车 子助手的入口节点
+        "enter_book_hotel",  # 酒店 子助手的入口节点
+        "enter_book_excursion",  # 旅游景点 子助手的入口节点
+        "primary_assistant_tools",  # 主助手的工具： 全网搜索工具，查询企业政策的工具
+        END,
+    ],
 )
 
-builder.add_edge("safe_tools", "assistant")
-builder.add_edge("sensitive_tools", "assistant")
+builder.add_edge("primary_assistant_tools", "primary_assistant")
 
-# 检查点让状态图可以持久化其状态
-# 这是整个状态图的完整内存
+
+# 每个委托的工作流可以直接响应用户。当用户响应时，我们希望返回到当前激活的工作流
+def route_to_workflow(state: dict) -> str:
+    """
+    如果我们在一个委托的状态中，直接路由到相应的助理。
+    :param state: 当前对话状态字典
+    :return: 应跳转到的节点名
+    """
+    dialog_state = state.get("dialog_state")
+    if not dialog_state:
+        return "primary_assistant"  # 如果没有对话状态，返回主助理
+    return dialog_state[-1]  # 返回最后一个对话状态
+
+
+builder.add_conditional_edges(
+    "fetch_user_info",
+    route_to_workflow,
+    [
+        "primary_assistant",
+        "update_flight",
+        "book_car_rental",
+        "book_hotel",
+        "book_excursion",
+    ],
+)  # 根据获取用户信息进行路由
+
 memory = MemorySaver()
-
-# 编译状态图，配置检查点为memory, 配置中断点
 graph = builder.compile(
     checkpointer=memory,
     interrupt_before=[
-        "sensitive_tools",
+        "update_flight_sensitive_tools",
+        "book_car_rental_sensitive_tools",
+        "book_hotel_sensitive_tools",
+        "book_excursion_sensitive_tools",
     ],
 )
 
