@@ -39,35 +39,35 @@
 
 **可调用的工具清单：**
 
-| 类别 | 工具 | 说明 |
-|------|------|------|
-| 航班 | `fetch_user_flight_information` | 查询当前乘客的机票和座位信息 |
-| 航班 | `search_flights` | 按出发/到达机场、时间范围搜索航班 |
-| 航班 | `update_ticket_to_new_flight` | 改签（距起飞需 ≥ 3 小时） |
-| 航班 | `cancel_ticket` | 退票（验证乘客身份后删除） |
-| 酒店 | `search_hotels` | 按地点/名称搜索酒店 |
-| 酒店 | `book_hotel` / `update_hotel` / `cancel_hotel` | 订/改/取消酒店 |
-| 租车 | `search_car_rentals` | 按地点/名称搜索租车 |
-| 租车 | `book_car_rental` / `update_car_rental` / `cancel_car_rental` | 订/改/取消租车 |
-| 旅行推荐 | `search_trip_recommendations` | 按地点/关键词搜索景点活动 |
-| 旅行推荐 | `book_excursion` / `update_excursion` / `cancel_excursion` | 订/改/取消行程项目 |
-| 政策查询 | `lookup_policy` | 向量检索 FAQ（余弦相似度，OpenRouter bge-m3 嵌入） |
-| 网络搜索 | `tavily_tool` | 实时搜索兜底，最多返回 1 条结果 |
+| 类别     | 工具                                                          | 说明                                               |
+| -------- | ------------------------------------------------------------- | -------------------------------------------------- |
+| 航班     | `fetch_user_flight_information`                               | 查询当前乘客的机票和座位信息                       |
+| 航班     | `search_flights`                                              | 按出发/到达机场、时间范围搜索航班                  |
+| 航班     | `update_ticket_to_new_flight`                                 | 改签（距起飞需 ≥ 3 小时）                          |
+| 航班     | `cancel_ticket`                                               | 退票（验证乘客身份后删除）                         |
+| 酒店     | `search_hotels`                                               | 按地点/名称搜索酒店                                |
+| 酒店     | `book_hotel` / `update_hotel` / `cancel_hotel`                | 订/改/取消酒店                                     |
+| 租车     | `search_car_rentals`                                          | 按地点/名称搜索租车                                |
+| 租车     | `book_car_rental` / `update_car_rental` / `cancel_car_rental` | 订/改/取消租车                                     |
+| 旅行推荐 | `search_trip_recommendations`                                 | 按地点/关键词搜索景点活动                          |
+| 旅行推荐 | `book_excursion` / `update_excursion` / `cancel_excursion`    | 订/改/取消行程项目                                 |
+| 政策查询 | `lookup_policy`                                               | 向量检索 FAQ（余弦相似度，OpenRouter bge-m3 嵌入） |
+| 网络搜索 | `tavily_tool`                                                 | 实时搜索兜底，最多返回 1 条结果                    |
 
 ---
 
 ### 技术架构
 
-| 层次 | 技术选型 | 说明 |
-|------|----------|------|
-| **智能体编排** | LangGraph | 状态机驱动的多步骤 Agent 工作流 |
-| **LLM 接入** | OpenAI API / 智谱 AI (ZhipuAI) | 双模型支持，兼容国内外场景 |
-| **工具调用** | LangChain Tools | 封装在 `tools/` 模块中 |
-| **对话管理** | LangGraph 图对话 | 实现在 `graph_chat/` 模块中 |
-| **向量检索** | Sentence Transformers + HuggingFace | 本地嵌入模型，用于语义搜索 |
-| **知识图谱** | Neo4j + neo4j-graphrag | 旅行知识图谱存储与查询 |
-| **结构化数据** | SQLite + SQLAlchemy | 轻量级本地数据库（航班/酒店数据） |
-| **追踪调试** | LangSmith | Agent 执行链路可观测性 |
+| 层次           | 技术选型                            | 说明                              |
+| -------------- | ----------------------------------- | --------------------------------- |
+| **智能体编排** | LangGraph                           | 状态机驱动的多步骤 Agent 工作流   |
+| **LLM 接入**   | OpenAI API / 智谱 AI (ZhipuAI)      | 双模型支持，兼容国内外场景        |
+| **工具调用**   | LangChain Tools                     | 封装在 `tools/` 模块中            |
+| **对话管理**   | LangGraph 图对话                    | 实现在 `graph_chat/` 模块中       |
+| **向量检索**   | Sentence Transformers + HuggingFace | 本地嵌入模型，用于语义搜索        |
+| **知识图谱**   | Neo4j + neo4j-graphrag              | 旅行知识图谱存储与查询            |
+| **结构化数据** | SQLite + SQLAlchemy                 | 轻量级本地数据库（航班/酒店数据） |
+| **追踪调试**   | LangSmith                           | Agent 执行链路可观测性            |
 
 ### 项目结构
 
@@ -107,6 +107,21 @@ NEO4J_PASSWORD=your_password
 ```
 
 ---
+
+### 功能迭代
+
+**[2026-04-11] 流程节点重构**
+
+- **工具安全分级**：拆分原 `part_1_tools`，按操作性质分为 `safe_tools`（只读查询：搜索航班/酒店/租车/政策）和 `sensitive_tools`（写操作：订/改/退），并提取 `sensitive_tool_names` 集合供后续权限判断
+- **用户信息预加载节点**：新增 `fetch_user_info` 节点，在助手调用前主动调用 `fetch_user_flight_information` 拉取乘客航班信息并写入 `State.user_info`，图的起点由 `START → assistant` 改为 `START → fetch_user_info → assistant`
+- **工具调用中断确认**：编译图时加入 `interrupt_before=["tools"]`，每次工具调用前暂停；若用户输入 `y` 则继续，否则以 `ToolMessage` 将拒绝原因回传给 LLM，实现人在回路（Human-in-the-loop）
+
+**[项目初始化] 基础架构搭建**
+
+- 在 `tools/` 模块中完成航班、酒店、租车、旅行推荐、政策查询等工具函数的封装
+- 基于 LangGraph 搭建 `assistant → tools → assistant` 基础循环图，支持多轮工具调用与对话管理
+
+# Reference
 
 ## 环境管理 pyenv + venv
 
