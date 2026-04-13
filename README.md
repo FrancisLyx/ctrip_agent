@@ -44,7 +44,11 @@
 
 **各环节说明：**
 
-1. **入口** (`workflow.py`) — 每轮读取用户输入，以 `stream_mode="values"` 流式执行图。若图在敏感工具节点中断，提示用户二次确认；确认后继续执行，否则将拒绝原因以 `ToolMessage` 回传 LLM。
+1. **入口** — 提供两种运行模式：
+   - `graph_chat/graph_gradio.py`（Gradio Web UI）：浏览器交互式聊天界面，用户输入通过 Chatbot 组件展示
+   - `graph_chat/workflow.py`（命令行）：终端逐轮对话，以 `stream_mode="values"` 流式执行图
+   
+   两种模式均支持敏感工具中断确认（输入 `y` 继续，否则回传拒绝原因）。
 
 2. **fetch_user_info 节点** — 图启动后首先执行，调用 `fetch_user_flight_information` 拉取当前乘客航班信息，写入 `State.user_info`，供主助理系统提示直接使用。
 
@@ -68,31 +72,33 @@
 | 租车     | `book_car_rental` / `update_car_rental` / `cancel_car_rental` | 订/改/取消租车                                     |
 | 旅行推荐 | `search_trip_recommendations`                                 | 按地点/关键词搜索景点活动                          |
 | 旅行推荐 | `book_excursion` / `update_excursion` / `cancel_excursion`    | 订/改/取消行程项目                                 |
-| 政策查询 | `lookup_policy`                                               | 向量检索 FAQ（余弦相似度，OpenRouter bge-m3 嵌入） |
-| 网络搜索 | `tavily_tool`                                                 | 实时搜索兜底，最多返回 1 条结果                    |
+| 政策查询 | `lookup_policy`                                               | 向量检索 FAQ（余弦相似度，OpenRouter bge-m3 嵌入）  |
+| 网络搜索 | `tavily_tool` (`TavilySearchResults`)                         | 实时搜索兜底，最多返回 1 条结果                     |
 
 ---
 
 ### 技术架构
 
-| 层次           | 技术选型                            | 说明                              |
-| -------------- | ----------------------------------- | --------------------------------- |
-| **智能体编排** | LangGraph                           | 状态机驱动的多步骤 Agent 工作流   |
-| **LLM 接入**   | OpenAI API / 智谱 AI (ZhipuAI)      | 双模型支持，兼容国内外场景        |
-| **工具调用**   | LangChain Tools                     | 封装在 `tools/` 模块中            |
-| **对话管理**   | LangGraph 图对话                    | 实现在 `graph_chat/` 模块中       |
-| **向量检索**   | Sentence Transformers + HuggingFace | 本地嵌入模型，用于语义搜索        |
-| **知识图谱**   | Neo4j + neo4j-graphrag              | 旅行知识图谱存储与查询            |
-| **结构化数据** | SQLite + SQLAlchemy                 | 轻量级本地数据库（航班/酒店数据） |
-| **追踪调试**   | LangSmith                           | Agent 执行链路可观测性            |
+| 层次           | 技术选型                            | 说明                                        |
+| -------------- | ----------------------------------- | ------------------------------------------- |
+| **智能体编排** | LangGraph                           | 状态机驱动的多步骤 Agent 工作流             |
+| **LLM 接入**   | OpenRouter (OpenAI 兼容)            | 通过 OpenRouter 统一接入多模型              |
+| **工具调用**   | LangChain Tools                     | 封装在 `tools/` 模块中                      |
+| **对话管理**   | LangGraph 图对话                    | 实现在 `graph_chat/` 模块中                 |
+| **向量检索**   | OpenAI Embeddings (bge-m3)          | 通过 OpenRouter 调用 bge-m3 嵌入模型        |
+| **Web UI**     | Gradio                              | 基于 Gradio 的交互式聊天界面                |
+| **结构化数据** | SQLite + SQLAlchemy                 | 轻量级本地数据库（航班/酒店数据）           |
+| **追踪调试**   | LangSmith                           | Agent 执行链路可观测性                      |
 
 ### 项目结构
 
 ```
 ctrip_agent/
-├── main.py              # 入口文件
+├── graph_chat/
+│   ├── graph_gradio.py  # Gradio Web UI 入口
+│   ├── workflow.py       # 命令行模式入口（图构建 + 主循环）
+│   └── ...              # 助理、子图、状态等模块
 ├── tools/               # LangChain 工具集（航班查询、酒店查询等）
-├── graph_chat/          # LangGraph 对话图定义
 ├── requirements.txt     # 项目依赖
 └── travel.sqlite        # SQLite 数据库文件
 ```
@@ -106,8 +112,11 @@ pip install -r requirements.txt
 # 2. 配置环境变量（复制后填入 API Key）
 cp .env.example .env
 
-# 3. 运行
-python main.py
+# 3. 启动 Gradio Web UI
+python graph_chat/graph_gradio.py
+
+# 或使用命令行模式
+python graph_chat/workflow.py
 ```
 
 ### 环境变量
@@ -115,17 +124,22 @@ python main.py
 在 `.env` 文件中配置以下字段：
 
 ```env
-OPENAI_API_KEY=your_openai_api_key
-ZHIPUAI_API_KEY=your_zhipuai_api_key
+OPENROUTER_API_KEY=your_openrouter_api_key
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_EMBEDDINGS_MODEL_NAME=baai/bge-m3
+LLM_MODEL_NAME=your_llm_model_name
 LANGSMITH_API_KEY=your_langsmith_api_key   # 可选，用于追踪调试
-NEO4J_URI=bolt://localhost:7687
-NEO4J_USERNAME=neo4j
-NEO4J_PASSWORD=your_password
 ```
 
 ---
 
 ### 功能迭代
+
+**[Gradio Web UI] 交互式聊天界面**
+
+- 新增 `graph_chat/graph_gradio.py`，基于 Gradio 构建 Web 聊天界面，支持多轮对话与敏感操作确认
+- 搜索工具从 `langchain-tavily` 专用包迁移至 `langchain-community` 内置的 `TavilySearchResults`
+- 依赖精简：移除 Neo4j/知识图谱、本地嵌入模型（Sentence Transformers/torch）、智谱 AI 等重型依赖，新增 Gradio/FastAPI/Uvicorn
 
 **[拆分多 Agent] 多助理协作架构**
 
@@ -205,7 +219,7 @@ class State(TypedDict):
 - `user_info`：由 `fetch_user_info` 节点在图启动时填充
 - `dialog_state`：栈结构，跟踪当前激活的子助理。入栈时 `push` 子助理名，出栈时传 `"pop"` 弹出栈顶
 
-#### 2. 图构建流程 (`graph_chat/workflow.py`)
+#### 2. 图构建流程 (`graph_chat/workflow.py` / `graph_chat/graph_gradio.py`)
 
 | 步骤 | 操作 | 说明 |
 |------|------|------|
@@ -273,21 +287,22 @@ update_flight → CompleteOrEscalate (tool_call)
 ```
 ctrip_agent/
 ├── graph_chat/
-│   ├── workflow.py            # 图构建、编译、主循环
+│   ├── graph_gradio.py        # Gradio Web UI 入口（图构建 + 聊天界面）
+│   ├── workflow.py            # 命令行模式入口（图构建 + 主循环）
 │   ├── state.py               # State 定义（messages, user_info, dialog_state）
 │   ├── assistant.py           # CtripAssistant 类 + 主助理 prompt/tools
 │   ├── agent_assistant.py     # 四个子助理的 prompt/tools 定义
 │   ├── build_child_graph.py   # 子工作流构建（节点/边/路由/leave_skill）
 │   ├── entry_node.py          # 子助理入口节点工厂函数
 │   ├── base_data_model.py     # Pydantic 委派模型 + CompleteOrEscalate
-│   ├── llm_tavily.py          # LLM 和 Tavily 搜索工具初始化
+│   ├── llm_tavily.py          # LLM 和 TavilySearchResults 初始化
 │   └── draw_png.py            # 图可视化
 ├── tools/
 │   ├── flights_tools.py       # 航班工具（查询/改签/退票）
 │   ├── hotels_tools.py        # 酒店工具（搜索/预订/修改/取消）
 │   ├── car_tools.py           # 租车工具
 │   ├── trip_tools.py          # 旅游推荐工具
-│   ├── retriever_vector.py    # 政策向量检索
+│   ├── retriever_vector.py    # 政策向量检索（OpenRouter bge-m3 嵌入）
 │   ├── tools_handler.py       # ToolNode 封装 + 兜底 + 打印
 │   └── init_db.py             # 数据库初始化/日期更新
 ├── travel.sqlite              # 原始数据备份

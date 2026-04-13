@@ -2,7 +2,7 @@
 
 import os
 
-from langchain_tavily import TavilySearch
+from langchain_community.tools import TavilySearchResults
 from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
 
@@ -44,4 +44,4 @@ llm = ChatOpenAI(
 
 # 初始化搜索工具，限制结果数量为2
 os.environ["TAVILY_API_KEY"] = "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"
-tavily_tool = TavilySearch(max_results=1)
+tavily_tool = TavilySearchResults(max_results=1)
