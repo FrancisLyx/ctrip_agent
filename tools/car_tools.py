@@ -6,17 +6,16 @@ from typing import Optional, Union
 from langchain_core.tools import tool
 
 from tools.location_trans import transform_location
-
-db = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "travel_new.sqlite")
+from tools import db
 
 
 @tool
 def search_car_rentals(
-        location: Optional[str] = None,
-        name: Optional[str] = None
-        # price_tier: Optional[str] = None,
-        # start_date: Optional[Union[datetime, date]] = None,
-        # end_date: Optional[Union[datetime, date]] = None,
+    location: Optional[str] = None,
+    name: Optional[str] = None,
+    # price_tier: Optional[str] = None,
+    # start_date: Optional[Union[datetime, date]] = None,
+    # end_date: Optional[Union[datetime, date]] = None,
 ) -> list[dict]:
     """
     根据位置、名称、价格层级、开始日期和结束日期搜索汽车租赁信息。
@@ -78,9 +77,9 @@ def book_car_rental(rental_id: int) -> str:
 
 @tool
 def update_car_rental(
-        rental_id: int,
-        start_date: Optional[Union[datetime, date]] = None,
-        end_date: Optional[Union[datetime, date]] = None,
+    rental_id: int,
+    start_date: Optional[Union[datetime, date]] = None,
+    end_date: Optional[Union[datetime, date]] = None,
 ) -> str:
     """
     根据ID更新汽车租赁的开始和结束日期。

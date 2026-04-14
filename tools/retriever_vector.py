@@ -4,14 +4,13 @@ import numpy as np
 from langchain_openai import OpenAIEmbeddings
 from langchain_core.tools import tool
 from dotenv import load_dotenv
+from tools import basic_dir
 
 load_dotenv()
 
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
 # 读取 FAQ 文本文件
 faq_text = None
-with open(os.path.join(_PROJECT_ROOT, "order_faq.md"), encoding="utf8") as f:
+with open(os.path.join(basic_dir, "order_faq.md"), encoding="utf8") as f:
     faq_text = f.read()
 # 将 FAQ 文本按标题分割成多个文档
 docs = [{"page_content": txt} for txt in re.split(r"(?=\n##)", faq_text)]

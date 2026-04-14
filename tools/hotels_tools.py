@@ -6,17 +6,16 @@ from typing import Optional, Union
 from langchain_core.tools import tool
 
 from tools.location_trans import transform_location
-
-db = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "travel_new.sqlite")
+from tools import db
 
 
 @tool
 def search_hotels(
-        location: Optional[str] = None,
-        name: Optional[str] = None
-        # price_tier: Optional[str] = None,
-        # checkin_date: Optional[Union[datetime, date]] = None,
-        # checkout_date: Optional[Union[datetime, date]] = None,
+    location: Optional[str] = None,
+    name: Optional[str] = None,
+    # price_tier: Optional[str] = None,
+    # checkin_date: Optional[Union[datetime, date]] = None,
+    # checkout_date: Optional[Union[datetime, date]] = None,
 ) -> list[dict]:
     """
     根据位置、名称、价格层级、入住日期和退房日期搜索酒店。
@@ -43,10 +42,10 @@ def search_hotels(
         params.append(f"%{name}%")
     # 为了本教程的目的，我们不对日期和价格层级进行严格匹配
 
-    print('查询酒店的SQL：' + query, '参数: ', params)
+    print("查询酒店的SQL：" + query, "参数: ", params)
     cursor.execute(query, params)
     results = cursor.fetchall()
-    print('查询酒店的结果: ', results)
+    print("查询酒店的结果: ", results)
     conn.close()
 
     return [
@@ -81,9 +80,9 @@ def book_hotel(hotel_id: int) -> str:
 
 @tool
 def update_hotel(
-        hotel_id: int,
-        checkin_date: Optional[Union[datetime, date]] = None,
-        checkout_date: Optional[Union[datetime, date]] = None,
+    hotel_id: int,
+    checkin_date: Optional[Union[datetime, date]] = None,
+    checkout_date: Optional[Union[datetime, date]] = None,
 ) -> str:
     """
     根据ID更新酒店预订的入住和退房日期。
@@ -105,7 +104,8 @@ def update_hotel(
         )
     if checkout_date:
         cursor.execute(
-            "UPDATE hotels SET checkout_date = ? WHERE id = ?", (checkout_date, hotel_id)
+            "UPDATE hotels SET checkout_date = ? WHERE id = ?",
+            (checkout_date, hotel_id),
         )
 
     conn.commit()

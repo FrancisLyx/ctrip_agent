@@ -5,15 +5,14 @@ from typing import Optional, List
 from langchain_core.tools import tool
 
 from tools.location_trans import transform_location
-
-db = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "travel_new.sqlite")
+from tools import db
 
 
 @tool
 def search_trip_recommendations(
-        location: Optional[str] = None,
-        name: Optional[str] = None,
-        keywords: Optional[str] = None,
+    location: Optional[str] = None,
+    name: Optional[str] = None,
+    keywords: Optional[str] = None,
 ) -> List[dict]:
     """
     根据位置、名称和关键词搜索旅行推荐。

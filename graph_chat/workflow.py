@@ -142,61 +142,61 @@ graph = builder.compile(
 )
 
 #
-draw_graph(graph, "workflow.png")
+# draw_graph(graph, "workflow.png")
 
-session_id = str(uuid.uuid4())
-update_dates()  # 每次测试的时候：保证数据库是全新的，保证，时间也是最近的时间
+# session_id = str(uuid.uuid4())
+# update_dates()  # 每次测试的时候：保证数据库是全新的，保证，时间也是最近的时间
 
 # 配置参数，包含乘客ID和线程ID
-config = {
-    "configurable": {
-        # passenger_id用于我们的航班工具，以获取用户的航班信息
-        "passenger_id": "8149 604011",
-        # 检查点由session_id访问
-        "thread_id": session_id,
-    }
-}
+# config = {
+#     "configurable": {
+#         # passenger_id用于我们的航班工具，以获取用户的航班信息
+#         "passenger_id": "8149 604011",
+#         # 检查点由session_id访问
+#         "thread_id": session_id,
+#     }
+# }
 
-_printed = set()  # set集合，避免重复打印
+# _printed = set()  # set集合，避免重复打印
 
 # 执行工作流
-while True:
-    question = input("用户：")
-    if question.lower() in ["q", "exit", "quit"]:
-        print("对话结束，拜拜！")
-        break
-    else:
-        events = graph.stream(
-            {"messages": ("user", question)}, config, stream_mode="values"
-        )
-        # 打印消息
-        for event in events:
-            _print_event(event, _printed)
+# while True:
+#     question = input("用户：")
+#     if question.lower() in ["q", "exit", "quit"]:
+#         print("对话结束，拜拜！")
+#         break
+#     else:
+#         events = graph.stream(
+#             {"messages": ("user", question)}, config, stream_mode="values"
+#         )
+#         # 打印消息
+#         for event in events:
+#             _print_event(event, _printed)
 
-        current_state = graph.get_state(config)
-        if current_state.next:
-            user_input = input(
-                "您是否批准上述操作？输入'y'继续；否则，请说明您请求的更改。\n"
-            )
-            if user_input.strip().lower() == "y":
-                # 继续执行
-                events = graph.stream(None, config, stream_mode="values")
-                # 打印消息
-                for event in events:
-                    _print_event(event, _printed)
-            else:
-                # 通过提供关于请求的更改/改变主意的指示来满足工具调用
-                result = graph.stream(
-                    {
-                        "messages": [
-                            ToolMessage(
-                                tool_call_id=event["messages"][-1].tool_calls[0]["id"],
-                                content=f"Tool的调用被用户拒绝。原因：'{user_input}'。",
-                            )
-                        ]
-                    },
-                    config,
-                )
-                # 打印事件详情
-                for event in result:
-                    _print_event(event, _printed)
+#         current_state = graph.get_state(config)
+#         if current_state.next:
+#             user_input = input(
+#                 "您是否批准上述操作？输入'y'继续；否则，请说明您请求的更改。\n"
+#             )
+#             if user_input.strip().lower() == "y":
+#                 # 继续执行
+#                 events = graph.stream(None, config, stream_mode="values")
+#                 # 打印消息
+#                 for event in events:
+#                     _print_event(event, _printed)
+#             else:
+#                 # 通过提供关于请求的更改/改变主意的指示来满足工具调用
+#                 result = graph.stream(
+#                     {
+#                         "messages": [
+#                             ToolMessage(
+#                                 tool_call_id=event["messages"][-1].tool_calls[0]["id"],
+#                                 content=f"Tool的调用被用户拒绝。原因：'{user_input}'。",
+#                             )
+#                         ]
+#                     },
+#                     config,
+#                 )
+#                 # 打印事件详情
+#                 for event in result:
+#                     _print_event(event, _printed)

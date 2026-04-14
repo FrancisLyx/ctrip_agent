@@ -5,8 +5,7 @@ from typing import Optional, List, Dict
 import pytz
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
-
-db = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "travel_new.sqlite")
+from tools import db
 
 
 @tool
@@ -51,11 +50,11 @@ def fetch_user_flight_information(config: RunnableConfig) -> List[Dict]:
 
 @tool
 def search_flights(
-        departure_airport: Optional[str] = None,
-        arrival_airport: Optional[str] = None,
-        start_time: Optional[date | datetime] = None,
-        end_time: Optional[date | datetime] = None,
-        limit: int = 20,
+    departure_airport: Optional[str] = None,
+    arrival_airport: Optional[str] = None,
+    start_time: Optional[date | datetime] = None,
+    end_time: Optional[date | datetime] = None,
+    limit: int = 20,
 ) -> List[Dict]:
     """
     根据指定的参数（如出发机场、到达机场、出发时间范围等）搜索航班，并返回匹配的航班列表。
@@ -108,7 +107,7 @@ def search_flights(
 
 @tool
 def update_ticket_to_new_flight(
-        ticket_no: str, new_flight_id: int, *, config: RunnableConfig
+    ticket_no: str, new_flight_id: int, *, config: RunnableConfig
 ) -> str:
     """
     将用户的机票更新为新的有效航班。步骤如下：

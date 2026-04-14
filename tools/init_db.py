@@ -3,12 +3,7 @@ import shutil
 import sqlite3
 import pandas as pd
 
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-# 备份文件（原始数据，不会被修改）
-backup_file = os.path.join(_PROJECT_ROOT, "travel.sqlite")
-# 测试过程中实际使用的数据库（每次测试前从备份恢复）
-local_file = os.path.join(_PROJECT_ROOT, "travel_new.sqlite")
+from tools import backup_file, local_file
 
 
 def update_dates():
@@ -22,13 +17,17 @@ def update_dates():
         str: 更新后的数据库文件路径。
     """
     # 使用备份文件覆盖现有文件，作为重置步骤
-    shutil.copy(backup_file, local_file)  # 如果目标路径已经存在一个同名文件，shutil.copy 会覆盖该文件。
+    shutil.copy(
+        backup_file, local_file
+    )  # 如果目标路径已经存在一个同名文件，shutil.copy 会覆盖该文件。
 
     conn = sqlite3.connect(local_file)
     # cursor = conn.cursor()
 
     # 获取所有表名
-    tables = pd.read_sql("SELECT name FROM sqlite_master WHERE type='table';", conn).name.tolist()
+    tables = pd.read_sql(
+        "SELECT name FROM sqlite_master WHERE type='table';", conn
+    ).name.tolist()
     tdf = {}
 
     # 读取每个表的数据
@@ -36,20 +35,28 @@ def update_dates():
         tdf[t] = pd.read_sql(f"SELECT * from {t}", conn)
 
     # 找出示例时间（这里用flights表中的actual_departure的最大值）
-    example_time = pd.to_datetime(tdf["flights"]["actual_departure"].replace("\\N", pd.NaT)).max()
+    example_time = pd.to_datetime(
+        tdf["flights"]["actual_departure"].replace("\\N", pd.NaT)
+    ).max()
     current_time = pd.to_datetime("now").tz_localize(example_time.tz)
     time_diff = current_time - example_time
 
     # 更新bookings表中的book_date
     tdf["bookings"]["book_date"] = (
-            pd.to_datetime(tdf["bookings"]["book_date"].replace("\\N", pd.NaT), utc=True) + time_diff
+        pd.to_datetime(tdf["bookings"]["book_date"].replace("\\N", pd.NaT), utc=True)
+        + time_diff
     )
 
     # 需要更新的日期列
-    datetime_columns = ["scheduled_departure", "scheduled_arrival", "actual_departure", "actual_arrival"]
+    datetime_columns = [
+        "scheduled_departure",
+        "scheduled_arrival",
+        "actual_departure",
+        "actual_arrival",
+    ]
     for column in datetime_columns:
         tdf["flights"][column] = (
-                pd.to_datetime(tdf["flights"][column].replace("\\N", pd.NaT)) + time_diff
+            pd.to_datetime(tdf["flights"][column].replace("\\N", pd.NaT)) + time_diff
         )
 
     # 将更新后的数据写回数据库
@@ -64,7 +71,7 @@ def update_dates():
     return local_file
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
 
     # 执行日期更新操作
     db = update_dates()
