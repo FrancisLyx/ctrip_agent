@@ -86,7 +86,11 @@
 | **工具调用**   | LangChain Tools                     | 封装在 `tools/` 模块中                      |
 | **对话管理**   | LangGraph 图对话                    | 实现在 `graph_chat/` 模块中                 |
 | **向量检索**   | OpenAI Embeddings (bge-m3)          | 通过 OpenRouter 调用 bge-m3 嵌入模型        |
+| **API 服务**   | FastAPI + Uvicorn                   | RESTful 接口层，含 JWT 认证与用户管理       |
 | **Web UI**     | Gradio                              | 基于 Gradio 的交互式聊天界面                |
+| **配置管理**   | Dynaconf                            | 多环境配置，支持 YAML + 环境变量覆盖        |
+| **数据库 ORM** | SQLAlchemy 2.x                      | 用户管理数据（MySQL），工具数据用 SQLite    |
+| **鉴权**       | JWT (python-jose) + bcrypt          | Token 验证中间件 + 密码哈希                 |
 | **结构化数据** | SQLite + SQLAlchemy                 | 轻量级本地数据库（航班/酒店数据）           |
 | **追踪调试**   | LangSmith                           | Agent 执行链路可观测性                      |
 
@@ -112,11 +116,11 @@ pip install -r requirements.txt
 # 2. 配置环境变量（复制后填入 API Key）
 cp .env.example .env
 
-# 3. 启动 Gradio Web UI
-python graph_chat/graph_gradio.py
+# 3. 启动 FastAPI 服务（推荐）
+python main.py
 
-# 或使用命令行模式
-python graph_chat/workflow.py
+# 4. 或启动 Gradio Web UI
+python graph_chat/graph_gradio.py
 ```
 
 ### 环境变量
@@ -134,6 +138,31 @@ LANGSMITH_API_KEY=your_langsmith_api_key   # 可选，用于追踪调试
 ---
 
 ### 功能迭代
+
+**[FastAPI 接口层] RESTful API 服务**
+
+- **`main.py` 重写**：从占位脚本改为完整的 FastAPI 服务入口，通过 `Server` 类统一初始化日志、中间件、CORS、路由，使用 `uvicorn` 启动
+- **新增 `api/` 模块**：包含工作流调用接口（`/api/graph/`）与用户管理接口（注册/登录/CRUD）
+  - `api/graph_api/graph_views.py`：POST `/api/graph/`，接收用户输入与会话配置，驱动 LangGraph 工作流，处理普通提问与敏感操作确认（`y`），中断时返回确认提示
+  - `api/graph_api/graph_schemas.py`：定义 `GrapConfigurableSchema`（`passenger_id` + `thread_id`）、`BaseGraphSchema`、`GraphRspSchema`
+  - `api/system_mgt/user_views.py`：注册、登录、Auth 表单、查询、修改、批量删除用户
+  - `api/system_mgt/user_schemas.py`：用户相关 Pydantic Schema 定义
+- **新增 `config/` 模块**：基于 Dynaconf 管理多环境配置，`development.yml` 包含数据库（MySQL）、JWT 密钥、白名单、默认密码等
+- **新增 `db/` 模块**：SQLAlchemy ORM 层
+  - `db/__init__.py`：构建数据库引擎与 Session 工厂，定义 `DBModelBase`（含 `id`/`create_time`/`update_time` 公共字段）
+  - `db/dao.py`：泛型 `BaseDAO[Model, Create, Update]`，封装增删改查通用操作
+  - `db/system_mgt/models.py`：`UserModel` 定义（用户名、密码、手机、邮箱、头像等）
+  - `db/system_mgt/user_dao.py`：`UserDao` 继承 `BaseDAO`，扩展按用户名查询、批量删除（先清关联角色）
+- **新增 `utils/` 模块**：
+  - `middlewares.py`：JWT Token 验证中间件，白名单放行，解码后将 `username` 写入 `request.state`
+  - `jwt_utils.py`：使用 `python-jose` 生成/验证 JWT，过期时间从配置读取
+  - `password_hash.py`：bcrypt 密码哈希与验证
+  - `cors.py`：CORS 跨域配置，允许来源从 `settings.ORIGINS` 读取
+  - `handler_error.py`：全局异常处理注册
+  - `docs_oauth2.py`：自定义 `MyOAuth2PasswordBearer`，使 Swagger UI 支持 Bearer 认证
+  - `dependencies.py`：`get_db()` FastAPI 依赖注入，管理 SQLAlchemy Session 生命周期
+- **`tools/__init__.py` 新增路径常量**：将项目根目录、数据库文件路径（`db`、`local_file`、`backup_file`）统一在包级别定义，各工具模块改为从此处导入，消除重复路径拼接逻辑
+- **`graph_chat/workflow.py` 清理**：注释掉命令行交互主循环（`draw_graph`、`session_id`、`while True` 输入循环），工作流图对象 `graph` 保留供 API 层直接调用
 
 **[Gradio Web UI] 交互式聊天界面**
 
@@ -286,27 +315,56 @@ update_flight → CompleteOrEscalate (tool_call)
 
 ```
 ctrip_agent/
+├── main.py                # FastAPI 服务入口（Server 类）
+├── api/
+│   ├── routers.py         # 主路由注册
+│   ├── schemas.py         # 基础 Schema（InDBMixin）
+│   ├── graph_api/
+│   │   ├── graph_views.py    # POST /api/graph/ 工作流接口
+│   │   └── graph_schemas.py  # 工作流请求/响应 Schema
+│   └── system_mgt/
+│       ├── user_views.py     # 用户管理接口（注册/登录/CRUD）
+│       └── user_schemas.py   # 用户 Schema
+├── config/
+│   ├── __init__.py        # Dynaconf 配置加载
+│   ├── development.yml    # 开发环境配置
+│   └── log_config.py      # 日志配置
+├── db/
+│   ├── __init__.py        # SQLAlchemy 引擎 + DBModelBase
+│   ├── dao.py             # 通用 BaseDAO（泛型增删改查）
+│   └── system_mgt/
+│       ├── models.py      # UserModel
+│       └── user_dao.py    # UserDao
+├── utils/
+│   ├── middlewares.py     # JWT Token 验证中间件
+│   ├── jwt_utils.py       # JWT 生成与验证
+│   ├── password_hash.py   # bcrypt 密码哈希
+│   ├── cors.py            # CORS 跨域配置
+│   ├── handler_error.py   # 全局异常处理
+│   ├── docs_oauth2.py     # Swagger UI Bearer 认证
+│   └── dependencies.py    # get_db 依赖注入
 ├── graph_chat/
-│   ├── graph_gradio.py        # Gradio Web UI 入口（图构建 + 聊天界面）
-│   ├── workflow.py            # 命令行模式入口（图构建 + 主循环）
-│   ├── state.py               # State 定义（messages, user_info, dialog_state）
-│   ├── assistant.py           # CtripAssistant 类 + 主助理 prompt/tools
-│   ├── agent_assistant.py     # 四个子助理的 prompt/tools 定义
-│   ├── build_child_graph.py   # 子工作流构建（节点/边/路由/leave_skill）
-│   ├── entry_node.py          # 子助理入口节点工厂函数
-│   ├── base_data_model.py     # Pydantic 委派模型 + CompleteOrEscalate
-│   ├── llm_tavily.py          # LLM 和 TavilySearchResults 初始化
-│   └── draw_png.py            # 图可视化
+│   ├── graph_gradio.py    # Gradio Web UI 入口（图构建 + 聊天界面）
+│   ├── workflow.py        # 工作流图构建（graph 对象供 API 调用）
+│   ├── state.py           # State 定义（messages, user_info, dialog_state）
+│   ├── assistant.py       # CtripAssistant 类 + 主助理 prompt/tools
+│   ├── agent_assistant.py # 四个子助理的 prompt/tools 定义
+│   ├── build_child_graph.py  # 子工作流构建（节点/边/路由/leave_skill）
+│   ├── entry_node.py      # 子助理入口节点工厂函数
+│   ├── base_data_model.py # Pydantic 委派模型 + CompleteOrEscalate
+│   ├── llm_tavily.py      # LLM 和 TavilySearchResults 初始化
+│   └── draw_png.py        # 图可视化
 ├── tools/
-│   ├── flights_tools.py       # 航班工具（查询/改签/退票）
-│   ├── hotels_tools.py        # 酒店工具（搜索/预订/修改/取消）
-│   ├── car_tools.py           # 租车工具
-│   ├── trip_tools.py          # 旅游推荐工具
-│   ├── retriever_vector.py    # 政策向量检索（OpenRouter bge-m3 嵌入）
-│   ├── tools_handler.py       # ToolNode 封装 + 兜底 + 打印
-│   └── init_db.py             # 数据库初始化/日期更新
-├── travel.sqlite              # 原始数据备份
-├── travel_new.sqlite          # 运行时数据库（每次 update_dates 重置）
+│   ├── __init__.py        # 项目根路径 + 数据库路径常量
+│   ├── flights_tools.py   # 航班工具（查询/改签/退票）
+│   ├── hotels_tools.py    # 酒店工具（搜索/预订/修改/取消）
+│   ├── car_tools.py       # 租车工具
+│   ├── trip_tools.py      # 旅游推荐工具
+│   ├── retriever_vector.py   # 政策向量检索（OpenRouter bge-m3 嵌入）
+│   ├── tools_handler.py   # ToolNode 封装 + 兜底 + 打印
+│   └── init_db.py         # 数据库初始化/日期更新
+├── travel.sqlite          # 原始数据备份
+├── travel_new.sqlite      # 运行时数据库（每次 update_dates 重置）
 └── requirements.txt
 ```
 
